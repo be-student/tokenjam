@@ -11,6 +11,8 @@ shape so a regression back to substring matching is caught for real.
 """
 from __future__ import annotations
 
+import errno
+
 import pytest
 
 from tokenjam.core.server_state import _looks_like_serve
@@ -59,7 +61,7 @@ class TestDoesNotMatchUnrelatedProcesses:
 
 
 class TestUnavailableProcessIdentity:
-    @pytest.mark.parametrize("error", [FileNotFoundError, PermissionError, OSError])
+    @pytest.mark.parametrize("error", [FileNotFoundError, PermissionError, NotADirectoryError])
     def test_unavailable_ps_does_not_identify_a_serve_process(self, monkeypatch, error):
         from unittest.mock import Mock
 
@@ -69,6 +71,22 @@ class TestUnavailableProcessIdentity:
         monkeypatch.setattr(server_state.subprocess, "run", Mock(side_effect=error))
 
         assert server_state.is_serve_process(42424242) is False
+
+    @pytest.mark.parametrize("error_number", [errno.EAGAIN, errno.ENOMEM])
+    def test_resource_exhaustion_during_ps_probe_remains_visible(
+        self, monkeypatch, error_number
+    ):
+        from unittest.mock import Mock
+
+        from tokenjam.core import server_state
+
+        monkeypatch.setattr(server_state.Path, "exists", lambda path: False)
+        failure = OSError(error_number, "resource exhausted")
+        monkeypatch.setattr(server_state.subprocess, "run", Mock(side_effect=failure))
+
+        with pytest.raises(OSError) as raised:
+            server_state.is_serve_process(42424242)
+        assert raised.value.errno == error_number
 
     def test_stop_does_not_signal_a_live_pid_without_identity(self, tmp_path, monkeypatch):
         import json

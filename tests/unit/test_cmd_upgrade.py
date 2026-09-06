@@ -131,6 +131,14 @@ class TestRestartDaemon:
         assert method == "none"
         assert success is True
 
+    def test_identity_probe_resource_failure_is_not_reported_as_no_daemon(self):
+        state = ServerState(pid=123, port=7391, config_path=None)
+        failure = OSError("process table exhausted")
+        with patch.object(upgrade_mod, "is_pid_alive", return_value=True), \
+             patch.object(upgrade_mod, "is_serve_process", side_effect=failure):
+            with pytest.raises(OSError, match="process table exhausted"):
+                upgrade_mod.restart_daemon(state)
+
     def test_uses_launchd_kickstart_when_launchd_supervises_it(self):
         state = ServerState(pid=123, port=7391, config_path=None)
         run_mock = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))

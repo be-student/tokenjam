@@ -86,6 +86,12 @@ explicitly. (Critical Rule 8 — never construct a `NormalizedSpan` directly in 
 
 ### Daemon (launchd / systemd)
 
+`is_serve_process()` fails closed only when process identity is unavailable
+(`ps` is missing, inaccessible, or has an invalid path). Resource exhaustion
+while spawning `ps` must propagate; treating `EAGAIN` or `ENOMEM` as a negative
+identity check can make `tj upgrade` silently leave a live daemon on the old
+version.
+
 `tj onboard` (and `tj onboard --claude-code` / `--codex`) installs a background daemon that runs `tj serve` on login:
 - **macOS**: `~/Library/LaunchAgents/com.tokenjam.serve.plist` — loaded via `launchctl load`. Logs at `/tmp/tj-serve.{out,err}`.
 - **Linux**: `~/.config/systemd/user/tokenjam.service` — enabled via `systemctl --user enable --now tokenjam`.

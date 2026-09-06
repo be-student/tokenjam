@@ -87,10 +87,12 @@ def is_serve_process(pid: int) -> bool:
             ["ps", "-ww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True,
         )
-    except OSError:
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
         # Liveness alone does not establish identity: a stale PID can belong
         # to an unrelated process. Missing or unusable `ps` must fail closed,
-        # just like an unreadable /proc command line above.
+        # just like an unreadable /proc command line above. Resource failures
+        # such as EAGAIN and ENOMEM must propagate: they do not establish that
+        # the PID belongs to some other process.
         return False
     if result.returncode != 0:
         return False
