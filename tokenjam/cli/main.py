@@ -32,7 +32,13 @@ def _lock_holder_hint() -> str:
     state = read_server_state()
     if state is None:
         return ""
-    if not (is_pid_alive(state.pid) and is_serve_process(state.pid)):
+    try:
+        daemon_running = is_pid_alive(state.pid) and is_serve_process(state.pid)
+    except OSError:
+        # This hint is diagnostic only: a failed probe must not mask the
+        # original database-lock error or assert that the daemon is absent.
+        return ""
+    if not daemon_running:
         # The state file names a PID that's gone or isn't `tj serve` anymore
         # -- a crashed daemon can leave the DB lock held without a live
         # process to name, or the lock is held by something else entirely.
