@@ -572,6 +572,23 @@ def test_get_status_http_mode():
         _set_serve_url(None)
 
 
+def test_get_cost_summary_http_mode_preserves_complete_rows():
+    fake_response = {
+        "rows": [{
+            "group": "tool.read", "agent_id": "alpha", "model": None,
+            "input_tokens": 10, "output_tokens": 5, "cache_tokens": 4,
+            "cache_write_tokens": 3, "cost_usd": 0.02, "call_count": 7,
+        }],
+    }
+    _set_serve_url("http://127.0.0.1:7391")
+    try:
+        with patch("tokenjam.mcp.server._http_get", return_value=fake_response):
+            result = _tool_get_cost_summary(_srv._HttpDB(), "alpha", None, "tool")
+        assert result["rows"] == fake_response["rows"]
+    finally:
+        _set_serve_url(None)
+
+
 # --- test_list_traces_http_mode ---
 
 def test_list_traces_http_mode():
