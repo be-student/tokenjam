@@ -1862,12 +1862,6 @@ def test_optimize_ranks_findings_by_reclaimable_share_not_registry_order(runner,
     assert "Downsize:" in expanded.output
     assert "only ~0.2% of window tokens" not in expanded.output
 
-    requested = _invoke(runner, db, config, ["optimize", "downsize"])
-    assert requested.exit_code == 0
-    assert "Minor findings" not in requested.output
-    assert "Downsize:" in requested.output
-    assert "only ~0.2% of window tokens" not in requested.output
-
 
 def test_optimize_downsize_cta_matches_claude_code_persona(runner, db, config):
     """#97: a window dominated by claude-code-* sessions gets the Claude Code

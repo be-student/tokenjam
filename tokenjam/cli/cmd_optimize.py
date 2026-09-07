@@ -995,17 +995,15 @@ def _render_report(
     #              spans in this window") never disappears.
     #   minor    — real but de-minimis share: collapsed to a one-line pointer
     #              so it can't crowd out a finding that actually matters.
-    # --expand moves every quantified minor finding into the full-render bucket.
-    # Naming a finding is also an explicit request for its full detail; otherwise
-    # `tj optimize cache` would only repeat the pointer to that same command.
+    # --expand moves every quantified minor finding into the full-render bucket
+    # for this invocation. The default ranking and visibility remain unchanged.
     ranked = _rank_findings(report, requested)
-    show_minor_detail = expand or bool(requested)
     major = [
         item for item in ranked
-        if item[1] is not None and (show_minor_detail or item[1] >= DE_MINIMIS_SHARE)
+        if item[1] is not None and (expand or item[1] >= DE_MINIMIS_SHARE)
     ]
     unranked = [item for item in ranked if item[1] is None]
-    minor = [] if show_minor_detail else [
+    minor = [] if expand else [
         item for item in ranked if item[1] is not None and item[1] < DE_MINIMIS_SHARE
     ]
 
@@ -1110,12 +1108,12 @@ def _render_report(
                     f"     [dim]• {label} — "
                     f"{report.downgrade.percent_of_sessions:.0f}% of sessions "
                     f"match, but only ~{share * 100:.1f}% of window tokens. "
-                    f"Run [bold]tj optimize downsize[/bold] for detail.[/dim]"
+                    f"Run [bold]tj optimize downsize --expand[/bold] for detail.[/dim]"
                 )
             else:
                 console.print(
                     f"     [dim]• {label} — ~{share * 100:.1f}% of window "
-                    f"tokens. Run [bold]tj optimize {name}[/bold] for "
+                    f"tokens. Run [bold]tj optimize {name} --expand[/bold] for "
                     f"detail.[/dim]"
                 )
         console.print()
