@@ -66,6 +66,8 @@ def is_serve_process(pid: int) -> bool:
     Guards against PID reuse: a stale state file's PID may since have been
     recycled by an unrelated process, and we must never signal that.
     If neither /proc nor ps can establish identity, return False.
+    Resource failures while launching ps propagate: they do not establish
+    that the daemon is absent, and callers must not report a successful no-op.
     """
     proc_cmdline = Path(f"/proc/{pid}/cmdline")
     if proc_cmdline.exists():
@@ -87,7 +89,7 @@ def is_serve_process(pid: int) -> bool:
             ["ps", "-ww", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True,
         )
-    except OSError:
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
         # Liveness alone does not establish identity: a stale PID can belong
         # to an unrelated process. Missing or unusable `ps` must fail closed,
         # just like an unreadable /proc command line above.
