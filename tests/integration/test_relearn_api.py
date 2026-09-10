@@ -13,6 +13,9 @@ so the guards are proven at the route, not just in the core module.
 """
 from __future__ import annotations
 
+import threading
+import time
+
 import httpx
 import pytest
 
@@ -26,24 +29,168 @@ from tokenjam.core.optimize import relearn_apply as pa
 from tests.factories import make_session
 
 
+#: Every process-global compute flag the routes exercised in this file can read.
+#: ``relearn_store`` and ``cost_proposals`` each own their own ``threading.Event``,
+#: and ``report_store`` owns a third. They are DISTINCT objects — clearing one
+#: does nothing to the others, which is the whole reason the fixture below was
+#: silently inert. ``test_relearn_store_and_report_store_flags_are_distinct``
+#: pins that, so collapsing these back to a single import fails loudly.
+_COMPUTE_FLAG_SOURCES = (
+    ("tokenjam.core.optimize.relearn_store", "_COMPUTING"),
+    ("tokenjam.core.optimize.cost_proposals", "_COST_COMPUTING"),
+    ("tokenjam.core.optimize.report_store", "_COMPUTING"),
+)
+
+
+#: The daemon threads that SET those flags. Each worker sets its Event from
+#: inside the thread body, *after* building a fresh backend — see
+#: ``relearn_store.trigger_background_recompute._job``, which calls
+#: ``backend_factory()`` before ``recompute_now`` reaches ``_COMPUTING.set()``.
+#: So a worker still inside ``backend_factory()`` when the fixture clears will
+#: set the flag again during the NEXT test, and clearing alone cannot prevent
+#: it. The worker has to be gone first, which is what ``_drain_compute_workers``
+#: is for.
+_COMPUTE_WORKER_THREAD_NAMES = frozenset({
+    "relearn-recompute",
+    "cost-proposals-recompute",
+    "optimize-report-scan",
+})
+
+
+def _drain_compute_workers(timeout: float = 15.0) -> None:
+    """Join any outstanding recompute worker before touching the flags.
+
+    These threads are daemons that nothing joins, so without this the flag
+    clear races the worker that is about to set it. Bounded: a worker that
+    outlives the budget leaves the flag clear anyway (the caller clears after
+    us), so the worst case degrades to the pre-existing behaviour rather than
+    hanging the suite.
+    """
+    deadline = time.monotonic() + timeout
+    for thread in threading.enumerate():
+        if thread.name in _COMPUTE_WORKER_THREAD_NAMES and thread.is_alive():
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+
+def _clear_compute_flags() -> None:
+    import importlib
+
+    for module_name, attr in _COMPUTE_FLAG_SOURCES:
+        getattr(importlib.import_module(module_name), attr).clear()
+
+
+def _quiesce_compute_state() -> None:
+    """Drain outstanding workers, THEN clear. Order matters — see above."""
+    _drain_compute_workers()
+    _clear_compute_flags()
+
+
 @pytest.fixture(autouse=True)
 def _quiescent_relearn_computing_flag():
-    """Isolate each test from the process-global ``relearn`` compute flag.
+    """Isolate each test from the process-global compute flags these routes read.
 
-    ``report_store.is_computing()`` reads a module-level ``threading.Event``
-    (``_COMPUTING``). An earlier test that triggers a background recompute sets
-    it and does not join the worker thread, so whether the event is still set
-    when a later test runs depends on thread scheduling — which is exactly why
+    An earlier test that triggers a background recompute sets one of these
+    Events and does not join the worker thread, so whether it is still set when
+    a later test runs depends on thread scheduling — which is why
     ``test_relearn_proposals_carries_persona_when_never_run`` flaked on one
-    matrix leg (``computing``) while the others saw ``never_run``. Clear it
-    around every test so each starts from a quiescent store. Test-isolation
+    matrix leg (``computing``) while the others saw ``never_run``.
+
+    This fixture used to clear ``report_store._COMPUTING`` alone. The route it
+    was written to protect (``GET /api/v1/relearn/proposals``) reads
+    ``relearn_store.is_computing()``, and those are two different Event objects,
+    so the isolation cleared a flag nothing under test consults and the flake it
+    named in its own docstring kept happening. Clear every flag these routes can
+    actually read, and see ``_COMPUTE_FLAG_SOURCES`` above.
+
+    Clearing is necessary but not sufficient: each worker sets its Event from
+    inside the thread, after building a backend, so one still starting up when
+    we clear would set it again mid-next-test. ``_drain_compute_workers`` joins
+    those threads first — see ``_COMPUTE_WORKER_THREAD_NAMES``. Test-isolation
     only; it changes no production behavior.
     """
-    from tokenjam.core.optimize.report_store import _COMPUTING
-
-    _COMPUTING.clear()
+    _quiesce_compute_state()
     yield
-    _COMPUTING.clear()
+    _quiesce_compute_state()
+
+
+def test_relearn_store_and_report_store_flags_are_distinct():
+    """The compute flags are per-module, so isolation must clear each one.
+
+    This is the inverse of the defect: the fixture above cleared
+    ``report_store._COMPUTING`` while ``GET /api/v1/relearn/proposals`` read
+    ``relearn_store._COMPUTING``. Nothing failed, because a fixture that clears
+    the wrong object is indistinguishable from one that works until the race it
+    was meant to prevent actually fires. If these ever become one shared Event,
+    delete this test and simplify the fixture deliberately — do not let them
+    merge by accident.
+    """
+    from tokenjam.core.optimize import cost_proposals, relearn_store, report_store
+
+    assert relearn_store._COMPUTING is not report_store._COMPUTING
+    assert relearn_store._COMPUTING is not cost_proposals._COST_COMPUTING
+    assert report_store._COMPUTING is not cost_proposals._COST_COMPUTING
+
+
+def test_quiesce_waits_for_a_worker_that_sets_the_flag_late():
+    """A worker that sets the flag AFTER the clear must not survive the boundary.
+
+    This is the timing a plain clear cannot fix, and the reason this file
+    flaked even once the right Event was being cleared:
+    ``trigger_background_recompute._job`` calls ``backend_factory()`` before
+    ``recompute_now`` reaches ``_COMPUTING.set()``, so a worker still opening
+    its backend when the fixture clears will set the flag during the *next*
+    test.
+
+    A bare ``_clear_compute_flags()`` is asserted to LOSE this race, so the
+    test fails if someone drops the drain and keeps only the clear.
+    """
+    from tokenjam.core.optimize import relearn_store
+
+    def _late_worker(started: threading.Event) -> None:
+        started.set()
+        time.sleep(0.3)          # stand-in for backend_factory()
+        relearn_store._COMPUTING.set()
+
+    # Clearing alone loses: it returns while the worker is still pending, and
+    # the flag comes back on once the worker reaches its set().
+    started = threading.Event()
+    t = threading.Thread(target=_late_worker, args=(started,), name="relearn-recompute")
+    t.start()
+    assert started.wait(timeout=5)
+    _clear_compute_flags()
+    t.join(timeout=5)
+    assert relearn_store.is_computing() is True, (
+        "expected the bare clear to lose the race — if this now passes, the "
+        "worker shape changed and this guard needs rewriting, not deleting"
+    )
+    _clear_compute_flags()
+
+    # Draining first wins. Asserting the THREAD is gone is what pins the drain:
+    # a clear-only implementation returns immediately with the worker still
+    # alive, and this assertion is the one that catches that.
+    started = threading.Event()
+    t = threading.Thread(target=_late_worker, args=(started,), name="relearn-recompute")
+    t.start()
+    assert started.wait(timeout=5)
+    _quiesce_compute_state()
+    assert not t.is_alive(), (
+        "_quiesce_compute_state must JOIN the outstanding worker, not merely "
+        "clear the flag it is about to set"
+    )
+    assert relearn_store.is_computing() is False
+
+
+def test_quiesce_clears_every_flag_these_routes_read():
+    """Each flag the routes consult must be quiescent after the fixture runs."""
+    from tokenjam.core.optimize import cost_proposals, relearn_store
+
+    relearn_store._COMPUTING.set()
+    cost_proposals._COST_COMPUTING.set()
+    _quiesce_compute_state()
+
+    assert relearn_store.is_computing() is False
+    assert cost_proposals.is_computing_cost_proposals() is False
+
 
 
 @pytest.fixture
