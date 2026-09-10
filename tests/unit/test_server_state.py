@@ -11,6 +11,8 @@ shape so a regression back to substring matching is caught for real.
 """
 from __future__ import annotations
 
+import errno
+
 import pytest
 
 from tokenjam.core.server_state import _looks_like_serve
@@ -59,7 +61,7 @@ class TestDoesNotMatchUnrelatedProcesses:
 
 
 class TestUnavailableProcessIdentity:
-    @pytest.mark.parametrize("error", [FileNotFoundError, PermissionError, OSError])
+    @pytest.mark.parametrize("error", [FileNotFoundError, PermissionError, NotADirectoryError])
     def test_unavailable_ps_does_not_identify_a_serve_process(self, monkeypatch, error):
         from unittest.mock import Mock
 
@@ -128,3 +130,18 @@ class TestUnavailableProcessIdentity:
         monkeypatch.setattr(server_state.subprocess, "run", probe)
         assert server_state.is_serve_process(42424242) is True
         probe.assert_not_called()
+
+
+@pytest.mark.parametrize("code", [errno.EAGAIN, errno.ENOMEM, errno.EMFILE])
+def test_ps_resource_failure_propagates(monkeypatch, code):
+    from unittest.mock import Mock
+
+    from tokenjam.core import server_state
+
+    error = OSError(code, "process probe resource failure")
+    monkeypatch.setattr(server_state.Path, "exists", lambda path: False)
+    monkeypatch.setattr(server_state.subprocess, "run", Mock(side_effect=error))
+
+    with pytest.raises(OSError) as raised:
+        server_state.is_serve_process(42424242)
+    assert raised.value is error

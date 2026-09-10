@@ -86,6 +86,15 @@ explicitly. (Critical Rule 8 — never construct a `NormalizedSpan` directly in 
 
 ### Daemon (launchd / systemd)
 
+Process identity checks in `core/server_state.py` fail closed when `ps` is missing or
+unusable (missing path, permissions, or a non-directory path component). Other probe
+launch errors, including resource exhaustion, propagate rather than becoming a negative
+identity result. In particular, `tj upgrade` must exit unsuccessfully if its restart
+probe fails, never print "nothing to restart" for that failure. The server-state and
+upgrade unit tests cover these outcomes separately without touching a live daemon.
+The best-effort `_lock_holder_hint` is diagnostic only: it omits the hint on a
+probe error so the original database-lock message remains visible.
+
 `tj onboard` (and `tj onboard --claude-code` / `--codex`) installs a background daemon that runs `tj serve` on login:
 - **macOS**: `~/Library/LaunchAgents/com.tokenjam.serve.plist` — loaded via `launchctl load`. Logs at `/tmp/tj-serve.{out,err}`.
 - **Linux**: `~/.config/systemd/user/tokenjam.service` — enabled via `systemctl --user enable --now tokenjam`.

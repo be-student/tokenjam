@@ -11,6 +11,7 @@ daemon.
 """
 from __future__ import annotations
 
+import errno
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -376,3 +377,32 @@ class TestPipTargetWritable:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("code", [errno.EAGAIN, errno.ENOMEM, errno.EMFILE])
+def test_upgrade_does_not_report_no_daemon_after_ps_resource_failure(monkeypatch, code):
+    from tokenjam.core import server_state
+
+    state = ServerState(pid=42424242, port=7391, config_path=None)
+    error = OSError(code, "process probe resource failure")
+    monkeypatch.setattr(upgrade_mod, "detect_upgrade_plan", lambda: object())
+    monkeypatch.setattr(upgrade_mod, "run_package_upgrade", lambda plan: (True, "upgraded"))
+    monkeypatch.setattr(upgrade_mod, "detect_new_version", lambda: "1.0.0")
+    monkeypatch.setattr(upgrade_mod, "read_server_state", lambda: state)
+    monkeypatch.setattr(upgrade_mod, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(server_state.Path, "exists", lambda path: False)
+    probe = MagicMock(side_effect=error)
+    monkeypatch.setattr(server_state.subprocess, "run", probe)
+    launchd = MagicMock()
+    fallback = MagicMock()
+    monkeypatch.setattr(upgrade_mod, "_launchd_loaded", launchd)
+    monkeypatch.setattr(upgrade_mod, "_restart_via_stop_serve", fallback)
+
+    result = CliRunner().invoke(upgrade_mod.cmd_upgrade, [], obj={})
+
+    assert result.exit_code != 0
+    assert result.exception is error
+    assert "nothing to restart" not in result.output
+    probe.assert_called_once()
+    launchd.assert_not_called()
+    fallback.assert_not_called()
